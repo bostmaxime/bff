@@ -1,6 +1,6 @@
 # bff
 
-Track file changes using SHA-256 hashes stored in a JSON file.
+Track file changes and find duplicate files using SHA-256 content hashing.
 
 ## Build the executable
 
@@ -8,31 +8,33 @@ Track file changes using SHA-256 hashes stored in a JSON file.
 go build -o bff
 ```
 
-## Usage
-
-In the directory where the executable is located:
+## Commands
 
 ### Index files
 ```bash
-./bff index [directory]
+./bff index [--hidden] [directory]
 ```
+Creates or updates `bff.json` with file information. Use `--hidden` to include hidden files.
 
-Creates or updates `bff.json` with file data (hash, size, modification time). You can specify a directory. The current directory is used by default if no directory is specified. Note that the path is relative to where the command is run.
-
-### Compare the current state with the last indexed state
+### Compare changes
 ```bash
 ./bff compare [directory]
 ```
+Shows added, modified, moved/renamed, or deleted files since last indexing. Uses the saved `--hidden` setting.
 
-Shows which files were added, modified, moved/renamed, or deleted since the last indexing. Here too you can specify a directory with the same logic as above.
-
-### Include hidden files
-
-Use `--hidden` or `-h` to include hidden files and directories:
-
+### Find all duplicates
 ```bash
-./bff index --hidden
-./bff compare --hidden
+./bff duplicates [directory]
 ```
+Shows all groups of files with identical content.
 
-By default, hidden files are ignored. The compare command uses the same hidden setting as the one of the last indexing to reindex the directory for the comparison. You can override it with `--hidden` if it was not set before.
+### Find duplicates of a specific file
+```bash
+./bff find <file-path> [directory]
+```
+Shows all files with the same content as the specified file.
+
+## Notes
+
+- `compare`, `duplicates`, and `find` commands require running `./bff index` first in the specified directory
+- Specifying a directory is optional, it defaults to current directory if not specified.

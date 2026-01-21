@@ -7,12 +7,15 @@ import (
 )
 
 func TestIndex(t *testing.T) {
+	hashContent := computeHash([]byte("content"))
+	hashSecret := computeHash([]byte("secret"))
+
 	tests := []struct {
 		name          string
 		includeHidden bool
 		setupFunc     func(string) error
 		expectedCount int
-		expectedFiles []string
+		expectedMap   map[string][]string
 	}{
 		{
 			name:          "empty_directory",
@@ -21,7 +24,7 @@ func TestIndex(t *testing.T) {
 				return nil
 			},
 			expectedCount: 0,
-			expectedFiles: []string{},
+			expectedMap:   map[string][]string{},
 		},
 		{
 			name:          "one_file",
@@ -30,7 +33,9 @@ func TestIndex(t *testing.T) {
 				return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0644)
 			},
 			expectedCount: 1,
-			expectedFiles: []string{"file.txt"},
+			expectedMap: map[string][]string{
+				hashContent: {"file.txt"},
+			},
 		},
 		{
 			name:          "one_file_and_one_subdir",
@@ -46,7 +51,9 @@ func TestIndex(t *testing.T) {
 				return os.WriteFile(filepath.Join(subdir, "nested.txt"), []byte("content"), 0644)
 			},
 			expectedCount: 2,
-			expectedFiles: []string{"file.txt", "subdir/nested.txt"},
+			expectedMap: map[string][]string{
+				hashContent: {"file.txt", "subdir/nested.txt"},
+			},
 		},
 		{
 			name:          "two_subdirs",
@@ -66,7 +73,9 @@ func TestIndex(t *testing.T) {
 				return os.WriteFile(filepath.Join(subdir2, "file.txt"), []byte("content"), 0644)
 			},
 			expectedCount: 2,
-			expectedFiles: []string{"subdir1/file.txt", "subdir2/file.txt"},
+			expectedMap: map[string][]string{
+				hashContent: {"subdir1/file.txt", "subdir2/file.txt"},
+			},
 		},
 		{
 			name:          "hidden_file_excluded",
@@ -78,7 +87,9 @@ func TestIndex(t *testing.T) {
 				return os.WriteFile(filepath.Join(dir, ".hidden.txt"), []byte("content"), 0644)
 			},
 			expectedCount: 1,
-			expectedFiles: []string{"file.txt"},
+			expectedMap: map[string][]string{
+				hashContent: {"file.txt"},
+			},
 		},
 		{
 			name:          "hidden_file_included",
@@ -90,7 +101,9 @@ func TestIndex(t *testing.T) {
 				return os.WriteFile(filepath.Join(dir, ".hidden"), []byte("content"), 0644)
 			},
 			expectedCount: 2,
-			expectedFiles: []string{"file.txt", ".hidden"},
+			expectedMap: map[string][]string{
+				hashContent: {"file.txt", ".hidden"},
+			},
 		},
 		{
 			name:          "hidden_directory_excluded",
@@ -106,7 +119,9 @@ func TestIndex(t *testing.T) {
 				return os.WriteFile(filepath.Join(hiddenDir, "secret.txt"), []byte("secret"), 0644)
 			},
 			expectedCount: 1,
-			expectedFiles: []string{"file.txt"},
+			expectedMap: map[string][]string{
+				hashContent: {"file.txt"},
+			},
 		},
 		{
 			name:          "hidden_directory_included",
@@ -122,7 +137,24 @@ func TestIndex(t *testing.T) {
 				return os.WriteFile(filepath.Join(hiddenDir, "secret.txt"), []byte("secret"), 0644)
 			},
 			expectedCount: 2,
-			expectedFiles: []string{"file.txt", ".hidden/secret.txt"},
+			expectedMap: map[string][]string{
+				hashContent: {"file.txt"},
+				hashSecret:  {".hidden/secret.txt"},
+			},
+		},
+		{
+			name:          "duplicate_content",
+			includeHidden: false,
+			setupFunc: func(dir string) error {
+				if err := os.WriteFile(filepath.Join(dir, "file1.txt"), []byte("content"), 0644); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, "file2.txt"), []byte("content"), 0644)
+			},
+			expectedCount: 2,
+			expectedMap: map[string][]string{
+				hashContent: {"file1.txt", "file2.txt"},
+			},
 		},
 	}
 
@@ -149,14 +181,32 @@ func TestIndex(t *testing.T) {
 				t.Error("index file was not created")
 			}
 
-			for _, expectedFile := range tt.expectedFiles {
-				if _, exists := idx.Files[expectedFile]; !exists {
-					t.Errorf("expected file %q to be in index", expectedFile)
-				}
+			if len(tt.expectedMap) != len(idx.FilesByContentHash) {
+				t.Errorf("expected %d different hashes, got %d", len(tt.expectedMap), len(idx.FilesByContentHash))
 			}
 
-			if len(idx.Files) != tt.expectedCount {
-				t.Errorf("expected %d files in index, got %d", tt.expectedCount, len(idx.Files))
+			for expectedHash, expectedFiles := range tt.expectedMap {
+				actualFiles, exists := idx.FilesByContentHash[expectedHash]
+				if !exists {
+					t.Errorf("expected hash %q not found in index", expectedHash)
+					continue
+				}
+
+				if len(expectedFiles) != len(actualFiles) {
+					t.Errorf("for hash %q: expected %d files, got %d", expectedHash, len(expectedFiles), len(actualFiles))
+					continue
+				}
+
+				actualPaths := make(map[string]bool)
+				for _, file := range actualFiles {
+					actualPaths[file.Path] = true
+				}
+
+				for _, expectedPath := range expectedFiles {
+					if !actualPaths[expectedPath] {
+						t.Errorf("for hash %q: expected file %q not found", expectedHash, expectedPath)
+					}
+				}
 			}
 		})
 	}
@@ -315,6 +365,44 @@ func TestCompare(t *testing.T) {
 			expectedDeleted:        1, // file2
 			expectedRenamedOrMoved: 1, // file3
 		},
+		{
+			name: "saved_index_with_hidden_true",
+			initialSetup: func(dir string) error {
+				if err := os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("visible"), 0644); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, ".hidden.txt"), []byte("hidden"), 0644)
+			},
+			changeSetup: func(dir string) error {
+				if err := os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("visible modified"), 0644); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, ".hidden.txt"), []byte("hidden modified"), 0644)
+			},
+			expectedAdded:          0,
+			expectedModified:       2,
+			expectedDeleted:        0,
+			expectedRenamedOrMoved: 0,
+		},
+		{
+			name: "saved_index_with_hidden_false",
+			initialSetup: func(dir string) error {
+				if err := os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("visible"), 0644); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, ".hidden.txt"), []byte("hidden"), 0644)
+			},
+			changeSetup: func(dir string) error {
+				if err := os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("visible modified"), 0644); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, ".hidden.txt"), []byte("hidden modified"), 0644)
+			},
+			expectedAdded:          0,
+			expectedModified:       1,
+			expectedDeleted:        0,
+			expectedRenamedOrMoved: 0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -325,7 +413,12 @@ func TestCompare(t *testing.T) {
 				t.Fatalf("initial setup failed: %v", err)
 			}
 
-			idx := NewIndex(testDir, false)
+			includeHidden := false
+			if tt.name == "saved_index_with_hidden_true" {
+				includeHidden = true
+			}
+
+			idx := NewIndex(testDir, includeHidden)
 			if _, err := idx.Index(); err != nil {
 				t.Fatalf("Index() failed: %v", err)
 			}
@@ -334,8 +427,7 @@ func TestCompare(t *testing.T) {
 				t.Fatalf("change setup failed: %v", err)
 			}
 
-			idx2 := NewIndex(testDir, false)
-			result, err := idx2.Compare()
+			result, err := idx.Compare()
 			if err != nil {
 				t.Fatalf("Compare() failed: %v", err)
 			}
@@ -369,20 +461,116 @@ func TestIndexPath(t *testing.T) {
 	}
 }
 
-func TestIsHidden(t *testing.T) {
-	tests := []struct {
-		name     string
-		value    string
-		expected bool
-	}{
-		{"hidden", ".git", true},
-		{"not_hidden", "normal.txt", false},
+func TestFindAllDuplicates(t *testing.T) {
+	testDir := t.TempDir()
+
+	content1 := []byte("unique content 1")
+	content2 := []byte("duplicate content")
+	content3 := []byte("another duplicate content")
+
+	hashContent2 := computeHash(content2)
+	hashContent3 := computeHash(content3)
+
+	if err := os.WriteFile(filepath.Join(testDir, "file1.txt"), content1, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(testDir, "file2.txt"), content2, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(testDir, "file3.txt"), content2, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(testDir, "file4.txt"), content2, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(testDir, "file5.txt"), content3, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(testDir, "file6.txt"), content3, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
 	}
 
-	for _, tt := range tests {
-		result := isHidden(tt.value)
-		if result != tt.expected {
-			t.Errorf("on %q expected %v, got %v", tt.value, tt.expected, result)
+	idx := NewIndex(testDir, false)
+	if _, err := idx.Index(); err != nil {
+		t.Fatalf("indexing failed: %v", err)
+	}
+
+	duplicates := idx.FindAllDuplicates()
+
+	if len(duplicates) != 2 {
+		t.Errorf("expected 2 duplicate groups, got %d", len(duplicates))
+	}
+
+	group2, exists := duplicates[hashContent2]
+	if !exists {
+		t.Errorf("expected duplicate group for content2 hash %s not found", hashContent2)
+	} else if len(group2) != 3 {
+		t.Errorf("expected 3 files in content2 duplicate group, got %d", len(group2))
+	} else {
+		expectedPaths := map[string]bool{"file2.txt": true, "file3.txt": true, "file4.txt": true}
+		for _, file := range group2 {
+			if !expectedPaths[file.Path] {
+				t.Errorf("unexpected file %s in content2 duplicate group", file.Path)
+			}
 		}
+	}
+
+	group3, exists := duplicates[hashContent3]
+	if !exists {
+		t.Errorf("expected duplicate group for content3 hash %s not found", hashContent3)
+	} else if len(group3) != 2 {
+		t.Errorf("expected 2 files in content3 duplicate group, got %d", len(group3))
+	} else {
+		expectedPaths := map[string]bool{"file5.txt": true, "file6.txt": true}
+		for _, file := range group3 {
+			if !expectedPaths[file.Path] {
+				t.Errorf("unexpected file %s in content3 duplicate group", file.Path)
+			}
+		}
+	}
+}
+
+func TestFindDuplicates(t *testing.T) {
+	testDir := t.TempDir()
+
+	duplicateContent := []byte("duplicate content")
+	uniqueContent := []byte("unique content")
+
+	if err := os.WriteFile(filepath.Join(testDir, "file1.txt"), duplicateContent, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(testDir, "file2.txt"), duplicateContent, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(testDir, "file3.txt"), uniqueContent, 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	idx := NewIndex(testDir, false)
+	if _, err := idx.Index(); err != nil {
+		t.Fatalf("indexing failed: %v", err)
+	}
+
+	matches, err := idx.FindDuplicates("file1.txt")
+	if err != nil {
+		t.Fatalf("FindDuplicate failed: %v", err)
+	}
+
+	if len(matches) != 2 {
+		t.Errorf("expected 2 matches (file1.txt and file2.txt), got %d: %v", len(matches), matches)
+	}
+
+	matches, err = idx.FindDuplicates("file3.txt")
+	if err != nil {
+		t.Fatalf("FindDuplicate failed: %v", err)
+	}
+
+	if len(matches) != 1 {
+		t.Errorf("expected 1 match (only file3.txt), got %d: %v", len(matches), matches)
+	}
+
+	_, err = idx.FindDuplicates("nonexistent.txt")
+	if err == nil {
+		t.Error("expected error for non-existent file, got nil")
 	}
 }
